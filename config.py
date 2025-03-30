@@ -7,4 +7,10 @@ class Config:
         'min_detection_confidence': 0.7,
         'min_tracking_confidence': 0.5
     }
-    TARGET_LANDMARKS = [4, 8, 12, 16, 20]  # Landmark points for fingertips of (thumb, index, middle, ring, pinky)
+    TARGET_LANDMARKS = {
+        4: "thumb",
+        8: "index", 
+        12: "middle",
+        16: "ring",
+        20: "pinky"
+    }  # Landmark points for fingertips of (thumb, index, middle, ring, pinky)

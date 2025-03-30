@@ -44,10 +44,12 @@ class HandTracker:
         return 'left_hand' if hand_type == 'Right' else 'right_hand'
     
     def _process_landmarks(self, hand_landmarks, output: Dict[str, Any]):
+        finger_label = ["thumb", "index", "middle", "ring", "pinky"]
+
         # Select only config landmarks and store them in output
-        for landmark_id in Config.TARGET_LANDMARKS:
+        for landmark_id, finger_name in Config.TARGET_LANDMARKS.items():
             landmark = hand_landmarks.landmark[landmark_id]
-            output[str(landmark_id)] = {
+            output[finger_name] = {
                 'x': landmark.x,
                 'y': landmark.y,
                 'z': landmark.z
