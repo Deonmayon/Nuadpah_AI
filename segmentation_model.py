@@ -215,6 +215,10 @@ while True:
                         print(f"Active Keypoint Position: ({mapped_x}, {mapped_y})")
                         side = check_side(mapped_x, x_min, bbox_width) #show side
                         print({side})
+                    else:
+                        print(f"Inactive Keypoint Position: ({mapped_x}, {mapped_y})")
+                        side = check_side(mapped_x, x_min, bbox_width) #show side
+                        print({side})
                         
     cv2.imshow('Realtime Detection', output_frame)
     
