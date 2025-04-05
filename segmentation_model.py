@@ -4,7 +4,7 @@ import numpy as np
 import os
 from ultralytics import YOLO
 
-model = YOLO("model/new_best_seg.pt")
+model = YOLO("model/best_segment_yolo8n.pt")
 
 output_dir = "output_images/"
 os.makedirs(output_dir, exist_ok=True)
