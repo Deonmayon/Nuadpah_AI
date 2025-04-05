@@ -29,10 +29,15 @@ while cap.isOpened():
 
     if results.multi_hand_landmarks:
         for hand_landmarks in results.multi_hand_landmarks:
-            mp_drawing.draw_landmarks(
-                image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+            # เข้าถึงเฉพาะ THUMB_TIP (ปลายนิ้วโป้ง)
+            thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
+            h, w, _ = image.shape
+            cx, cy = int(thumb_tip.x * w), int(thumb_tip.y * h)
 
-    cv2.imshow('Hand Tracking', image)
+            # วาดวงกลมเฉพาะที่ปลายนิ้วโป้ง
+            cv2.circle(image, (cx, cy), 10, (0, 255, 0), -1)
+
+    cv2.imshow('Thumb Tip Only', image)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         print("ปิด")

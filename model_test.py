@@ -6,15 +6,14 @@ import numpy as np
 import os
 from ultralytics import YOLO
 import queue
-import time  # Add this import
+import time
 
-output_dir = "output_images/"
-os.makedirs(output_dir, exist_ok=True)
-
+# load reference image and keypoints
 ref_image_path = "images/person_15.jpg"
 ref_image = cv2.imread(ref_image_path)
 ref_h, ref_w, _ = ref_image.shape
 
+# load reference labels keypoints
 label_file = "labels/person_15_shoulder.txt"
 ref_keypoints = []
 
@@ -47,103 +46,57 @@ with open(label_file, "r") as file:
             keypoint_list.append((rel_x, rel_y, conf))
         
         ref_keypoints.append((class_id, keypoint_list))
+        
+massage_type = "shoulder"
 
-active_line = 0  # Track which line we're currently processing
-active_pair_index = 0  # Track which pair within the current line is active
-
-def get_keypoint_pairs(keypoints_list):
-    """
-    Create pairs for each line of keypoints
-    Returns a list of pairs for each line
-    """
-    all_line_pairs = []
-    
-    for class_id, keypoints in keypoints_list:
-        line_pairs = []
-        num_points = len(keypoints)
-        mid_point = num_points // 2
-        # Create pairs between first half and second half points
-        for i in range(mid_point):
-            line_pairs.append((i, i + mid_point))
-        all_line_pairs.append(line_pairs)
-    
-    return all_line_pairs
-
-def get_sequential_keypoint_pairs(keypoints_list):
-    all_line_pairs = []
-    for class_id, keypoints in keypoints_list:
-        line_pairs = []
-        num_points = len(keypoints)
-        if num_points > 1:
-            mid_point = num_points // 2
-            for i in range(0, mid_point - 1, 2):  # Step in groups of 2
-                line_pairs.append((i, i + 1))
-                if i + mid_point < num_points - 1:
-                    line_pairs.append((i + mid_point, i + 1 + mid_point))
-        all_line_pairs.append(line_pairs)   
-    return all_line_pairs
-
-TARGET_CLASS_NAME = "shoulder"
-TARGET_WIDTH = 800  # Standard width to calculate relative circle size
-
-GREEN_COLOR = (0, 255, 0)  # Active pair color
-DEEP_GREEN_COLOR = (0, 102, 0)  # Inactive pair color
-
-color_flipped = False  # Replace color_state with this simpler toggle
-
+# initialize mediapipe hands model
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+hands = mp_hands.Hands(
+    max_num_hands=2,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
 mp_draw = mp.solutions.drawing_utils
 
-# Initialize camera first
+# Initialize the camera
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print("Error: Could not open webcam.")
     exit()
 
-# Load YOLO model with error handling
 try:
     model = YOLO("model/new_best_seg.pt")
-    # Warm up the model
-    dummy_img = np.zeros((640, 640, 3), dtype=np.uint8)
-    model(dummy_img, verbose=False)
 except Exception as e:
     print(f"Error loading model: {e}")
-    print("Continuing with camera feed only...")
+    print("continue without model")
     model = None
 
-print("Webcam initialized. Press 'q' to quit, 's' to save current frame.")
+print("Webcam initialized. Press 'q' to quit")
 
 # Add shared data structures
 hand_frame_queue = queue.Queue(maxsize=2)
 hand_results_queue = queue.Queue(maxsize=2)
 stop_threads = False
 
-# Add frame processing settings
-PROCESS_EVERY_N_FRAMES = 2  # Process every Nth frame
-frame_counter = 0
-size_ratio = cap.get(cv2.CAP_PROP_FRAME_WIDTH) / TARGET_WIDTH
-base_radius = int(12 * size_ratio)
-base_radius = max(5, min(base_radius, 30))
+# configure frame processing settings
+process_every_n_frames = 2
+frame_count = 0
 
-# Optimize model settings
 if model is not None:
     model.conf = 0.25  # Lower confidence threshold
     model.iou = 0.45   # Lower IoU threshold
 
-# Add new queues for model inference
 model_frame_queue = queue.Queue(maxsize=2)
 model_results_queue = queue.Queue(maxsize=2)
 last_inference_time = 0
-MIN_INFERENCE_INTERVAL = 0.05  # 20 FPS max for model inference
+MIN_INFERENCE_INTERVAL = 0.05
 
-# Add caching and smoothing mechanisms
 last_valid_results = None
-RESULT_PERSISTENCE_TIME = 0.5  # Increased from 0.1
-CACHE_DURATION = 1.0  # Increased from 0.5
-CONFIDENCE_THRESHOLD = 0.25  # Minimum confidence for detection
-SMOOTHING_ALPHA = 0.7  # Temporal smoothing factor
-DEBUG_MODE = True  # Enable debug printing
+result_persistence_time = 0.5  # seconds
+cache_duration = 0.5  # seconds
+confidence_threshold = 0.25
+smoothing_alpha = 0.5  # Smoothing factor for keypoints
+debug_mode = True  # Set to True to enable debug mode
 
 last_result_time = 0
 results_cache = {}
@@ -153,6 +106,7 @@ last_confidence = 0
 smoothed_mask = None
 smoothed_box = None
 
+# Function to make smooth detection results
 def smooth_detection(new_mask, new_box, new_conf, alpha):
     """Smooth detection results between frames"""
     global last_valid_mask, last_valid_box, smoothed_mask, smoothed_box
@@ -181,7 +135,7 @@ def cache_results(mask, bbox_data, timestamp, confidence):
     current_time = time.time()
     
     # If no detection (mask and bbox_data are None), clean the entire cache
-    if mask is None and bbox_data is None:
+    if mask is None or bbox_data is None:
         results_cache.clear()
         last_valid_results = None
         return
@@ -189,10 +143,10 @@ def cache_results(mask, bbox_data, timestamp, confidence):
     # Clean old cache entries with decay
     results_cache = {
         k: v for k, v in results_cache.items()
-        if current_time - v['timestamp'] < CACHE_DURATION * v['confidence']
+        if current_time - v['timestamp'] < cache_duration * v['confidence']
     }
     
-    if confidence >= CONFIDENCE_THRESHOLD:
+    if confidence >= confidence_threshold:
         cache_key = hash(str(bbox_data))
         # Smooth with existing cache entry if available
         if cache_key in results_cache:
@@ -211,7 +165,7 @@ def cache_results(mask, bbox_data, timestamp, confidence):
             'timestamp': timestamp,
             'confidence': confidence
         }
-
+        
 def get_cached_results(bbox_data):
     cache_key = hash(str(bbox_data))
     if cache_key in results_cache:
@@ -257,12 +211,11 @@ def model_inference_thread():
             continue
         except Exception as e:
             print(f"Model inference error: {e}")
-
+            
 # Start hand detection thread
 hand_thread = threading.Thread(target=hand_detection_thread)
 hand_thread.start()
 
-# Start model inference thread if model is loaded
 if model is not None:
     model_thread = threading.Thread(target=model_inference_thread)
     model_thread.daemon = True
@@ -277,10 +230,9 @@ while True:
         break
     
     current_time = time.time()
-    frame_counter += 1
+    frame_count += 1
     output_frame = frame.copy()
     
-    # Queue frame for model inference with time control
     if current_time - last_inference_time >= MIN_INFERENCE_INTERVAL:
         try:
             if not model_frame_queue.full():
@@ -305,7 +257,7 @@ while True:
                 class_names = [model.names[idx] for idx in class_indices]
                 
                 for i, (mask, class_name, conf) in enumerate(zip(r.masks.xy, class_names, r.boxes.conf)):
-                    if class_name == TARGET_CLASS_NAME:
+                    if class_name == massage_type:
                         target_masks.append((mask, conf.item(), r.boxes.xyxy[i].cpu().numpy()))
             
             # Enhanced confidence handling
@@ -313,12 +265,12 @@ while True:
                 target_masks.sort(key=lambda x: x[1], reverse=True)
                 mask, confidence, box = target_masks[0]
                 
-                if DEBUG_MODE:
+                if debug_mode:
                     print(f"Detection confidence: {confidence:.2f}")
                 
                 # Apply temporal smoothing
                 smoothed_mask, smoothed_box = smooth_detection(
-                    mask, box, confidence, SMOOTHING_ALPHA
+                    mask, box, confidence, smoothing_alpha
                 )
                 
                 # Update cache with smoothed values
@@ -329,16 +281,16 @@ while True:
                 # Use smoothed results for visualization
                 mask, box = smoothed_mask, smoothed_box
             
-            elif last_valid_results and (current_time - last_result_time) < RESULT_PERSISTENCE_TIME:
+            elif last_valid_results and (current_time - last_result_time) < result_persistence_time:
                 mask, box = last_valid_results
-                if DEBUG_MODE:
+                if debug_mode:
                     print("Using cached results")
             else:
                 cached = get_cached_results(box if 'box' in locals() else None)
                 if cached:
                     mask = cached['mask']
                     box = cached['bbox']
-                    if DEBUG_MODE:
+                    if debug_mode:
                         print("Using fall-back cache")
             
             if 'mask' in locals():
@@ -356,61 +308,21 @@ while True:
                 bbox_width *= scale_x
                 bbox_height *= scale_y
                 
-                all_line_pairs = get_keypoint_pairs(ref_keypoints)
-                sequential_pairs = get_sequential_keypoint_pairs(ref_keypoints)
-                
-                for idx, (class_id, keypoints) in enumerate(ref_keypoints):
-                    # Draw sequential connections only for current line
-                    if idx == active_line:  # Only draw sequential connections for active line
-                        for pair in sequential_pairs[idx]:
-                            k1, k2 = pair
-                            kx1, ky1, _ = keypoints[k1]
-                            kx2, ky2, _ = keypoints[k2]
-                            
-                            mapped_x1 = int(x_min + kx1 * bbox_width)
-                            mapped_y1 = int(y_min + ky1 * bbox_height)
-                            mapped_x2 = int(x_min + kx2 * bbox_width)
-                            mapped_y2 = int(y_min + ky2 * bbox_height)
-                            
-                            # Draw sequential connections in yellow for active line
-                            if cv2.pointPolygonTest(mask_np, (mapped_x1, mapped_y1), False) >= 0 and \
-                               cv2.pointPolygonTest(mask_np, (mapped_x2, mapped_y2), False) >= 0:
-                                cv2.line(output_frame, (mapped_x1, mapped_y1), (mapped_x2, mapped_y2), (0, 102, 0), 2)
-                    
-                    # Only process active line points and pairs
-                    if idx != active_line:
-                        # Draw inactive points from other lines
-                        for kidx, (kx_rel, ky_rel, conf) in enumerate(keypoints):
-                            mapped_x = int(x_min + kx_rel * bbox_width)
-                            mapped_y = int(y_min + ky_rel * bbox_height)
-                            if cv2.pointPolygonTest(mask_np, (mapped_x, mapped_y), False) >= 0:
-                                cv2.circle(output_frame, (mapped_x, mapped_y), base_radius, DEEP_GREEN_COLOR, -1)
-                        continue
-                    
-                    # Process points for active line
-                    line_pairs = all_line_pairs[idx]
-                    for kidx, (kx_rel, ky_rel, conf) in enumerate(keypoints):
+                # Simplified point drawing - just show all points
+                for _, keypoints in ref_keypoints:
+                    for kx_rel, ky_rel, conf in keypoints:
                         mapped_x = int(x_min + kx_rel * bbox_width)
                         mapped_y = int(y_min + ky_rel * bbox_height)
                         
-                        # Check if this point is part of the active pair
-                        is_active_point = False
-                        if active_pair_index < len(line_pairs):
-                            current_pair = line_pairs[active_pair_index]
-                            is_active_point = kidx in current_pair
-                        
-                        color = GREEN_COLOR if is_active_point else DEEP_GREEN_COLOR
-                        
-                        # Draw point
+                        # Draw point if it's inside the mask
                         if cv2.pointPolygonTest(mask_np, (mapped_x, mapped_y), False) >= 0:
-                            cv2.circle(output_frame, (mapped_x, mapped_y), base_radius, color, -1)
-                            # Print position only for active points
-                            if is_active_point:
-                                print(f"Active Keypoint Position: ({mapped_x}, {mapped_y})")
+                            cv2.circle(output_frame, (mapped_x, mapped_y), 5, (0, 255, 0), -1)
+                            print(f"Point Position: ({mapped_x}, {mapped_y})")
     except queue.Empty:
         # Use cached results when queue is empty
         current_time = time.time()
-        if last_valid_results and (current_time - last_result_time) < RESULT_PERSISTENCE_TIME:
+        if last_valid_results and (current_time - last_result_time) < result_persistence_time:
+            
             mask, box = last_valid_results
             # Continue with visualization using last valid results
             mask_np = np.array(mask, dtype=np.int32)
@@ -427,57 +339,17 @@ while True:
             bbox_width *= scale_x
             bbox_height *= scale_y
             
-            all_line_pairs = get_keypoint_pairs(ref_keypoints)
-            sequential_pairs = get_sequential_keypoint_pairs(ref_keypoints)
-            
-            for idx, (class_id, keypoints) in enumerate(ref_keypoints):
-                # Draw sequential connections only for current line
-                if idx == active_line:  # Only draw sequential connections for active line
-                    for pair in sequential_pairs[idx]:
-                        k1, k2 = pair
-                        kx1, ky1, _ = keypoints[k1]
-                        kx2, ky2, _ = keypoints[k2]
-                        
-                        mapped_x1 = int(x_min + kx1 * bbox_width)
-                        mapped_y1 = int(y_min + ky1 * bbox_height)
-                        mapped_x2 = int(x_min + kx2 * bbox_width)
-                        mapped_y2 = int(y_min + ky2 * bbox_height)
-                        
-                        # Draw sequential connections in yellow for active line
-                        if cv2.pointPolygonTest(mask_np, (mapped_x1, mapped_y1), False) >= 0 and \
-                           cv2.pointPolygonTest(mask_np, (mapped_x2, mapped_y2), False) >= 0:
-                            cv2.line(output_frame, (mapped_x1, mapped_y1), (mapped_x2, mapped_y2), (0, 102, 0), 2)
-                
-                # Only process active line points and pairs
-                if idx != active_line:
-                    # Draw inactive points from other lines
-                    for kidx, (kx_rel, ky_rel, conf) in enumerate(keypoints):
-                        mapped_x = int(x_min + kx_rel * bbox_width)
-                        mapped_y = int(y_min + ky_rel * bbox_height)
-                        if cv2.pointPolygonTest(mask_np, (mapped_x, mapped_y), False) >= 0:
-                            cv2.circle(output_frame, (mapped_x, mapped_y), base_radius, DEEP_GREEN_COLOR, -1)
-                    continue
-                
-                # Process points for active line
-                line_pairs = all_line_pairs[idx]
-                for kidx, (kx_rel, ky_rel, conf) in enumerate(keypoints):
+            # Simplified point drawing - just show all points
+            for _, keypoints in ref_keypoints:
+                for kx_rel, ky_rel, conf in keypoints:
                     mapped_x = int(x_min + kx_rel * bbox_width)
                     mapped_y = int(y_min + ky_rel * bbox_height)
                     
-                    # Check if this point is part of the active pair
-                    is_active_point = False
-                    if active_pair_index < len(line_pairs):
-                        current_pair = line_pairs[active_pair_index]
-                        is_active_point = kidx in current_pair
-                    
-                    color = GREEN_COLOR if is_active_point else DEEP_GREEN_COLOR
-                    
-                    # Draw point
+                    # Draw point if it's inside the mask
                     if cv2.pointPolygonTest(mask_np, (mapped_x, mapped_y), False) >= 0:
-                        cv2.circle(output_frame, (mapped_x, mapped_y), base_radius, color, -1)
-                        # Print position only for active points
-                        if is_active_point:
-                            print(f"Active Keypoint Position: ({mapped_x}, {mapped_y})")
+                        cv2.circle(output_frame, (mapped_x, mapped_y), 5, (0, 255, 0), -1)
+                        print(f"Point Position: ({mapped_x}, {mapped_y})")
+        
         pass
     
     # Process hand detection every frame for smoothness
@@ -514,20 +386,6 @@ while True:
     if key == ord('q'):
         stop_threads = True
         break
-    # If 'c' is pressed, cycle to next pair
-    elif key == ord('c'):
-        if active_line < len(all_line_pairs):
-            active_pair_index = (active_pair_index + 1) % len(all_line_pairs[active_line])
-            # If we've cycled through all pairs in this line, move to next line
-            if active_pair_index == 0:
-                active_line = (active_line + 1) % len(all_line_pairs)
-            print(f"Line {active_line + 1}, Pair {active_pair_index + 1}: {all_line_pairs[active_line][active_pair_index]}")
-    # If 's' is pressed, save the current frame
-    elif key == ord('s'):
-        timestamp = int(cv2.getTickCount())
-        save_path = os.path.join(output_dir, f"capture_{timestamp}.jpg")
-        cv2.imwrite(save_path, output_frame)
-        print(f"Saved current frame to {save_path}")
 
 cap.release()
 cv2.destroyAllWindows()
