@@ -49,6 +49,14 @@ with open(label_file, "r") as file:
 active_line = 0  # Track which line we're currently processing
 active_pair_index = 0  # Track which pair within the current line is active
 
+#check side
+def check_side(mapped_x, x_min, bbox_width):
+    center_x = x_min + bbox_width / 2
+    if mapped_x < center_x:
+        return "left"
+    else:
+        return "right"
+
 def get_keypoint_pairs(keypoints_list):
     """
     Create pairs for each line of keypoints
@@ -205,7 +213,9 @@ while True:
                     # Print position only for active points
                     if is_active_point:
                         print(f"Active Keypoint Position: ({mapped_x}, {mapped_y})")
-    
+                        side = check_side(mapped_x, x_min, bbox_width) #show side
+                        print({side})
+                        
     cv2.imshow('Realtime Detection', output_frame)
     
     key = cv2.waitKey(1) & 0xFF
